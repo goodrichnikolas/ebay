@@ -7,9 +7,6 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils import get_column_letter
 import glob
-from natsort import natsorted
-
-
 
 def get_data(url):
     r = requests.get(url)
