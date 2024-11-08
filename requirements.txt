@@ -2,3 +2,7 @@ openpyxl
 pandas
 bs4
 requests
+playwright
+aiofiles
+aiohttp
+ollama

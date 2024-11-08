@@ -1,124 +1,256 @@
-from bs4 import BeautifulSoup
-import requests
+import asyncio
+from playwright.async_api import async_playwright, Page, Browser, Playwright
 import pandas as pd
-import os
+import logging
+from pathlib import Path
+from typing import List, Optional
+from datetime import datetime
 import re
-from openpyxl import Workbook
-from openpyxl.drawing.image import Image
-from openpyxl.utils import get_column_letter
-import glob
+from urllib.parse import quote_plus
+from dataclasses import dataclass, asdict
+import aiofiles
+import aiohttp
+import sys
+from contextlib import asynccontextmanager
 
-def get_data(url):
-    r = requests.get(url)
-    soup = BeautifulSoup(r.text, 'html.parser')
-    #save soup to html file named 'index.html'
-    with open('index.html', 'w', encoding='utf-8-sig') as file:
-        file.write(soup.prettify())
-    return soup
+@dataclass
+class EbayItem:
+    """Data class to store eBay item information."""
+    title: str
+    price: float
+    shipping: Optional[str]
+    sold_date: Optional[str]
+    img_link: Optional[str]
+    item_page: str
+    condition: Optional[str]
+    scrape_date: str
 
-def parse(soup):
-    results = soup.find_all('div', {'class': 's-item__wrapper clearfix'})
-    #<div class="s-item__title"><span role="heading" aria-level="3">2003 Dragon Ball Z Score Majin Vegeta, The Malicious Limited Foil Rare Mint 8.5</span></div>
-    list_of_dicts = []
-    
-    for result in results:
-        title = result.find('div', {'class': 's-item__title'}).text
-        title = make_safe_filename(title)
-        #remove spaces and replace with underscore
-        title = title.replace(' ', '_')
-        price = result.find('span', {'class': 's-item__price'}).text
-        #<span class="s-item__shipping s-item__logisticsCost"><span class="ITALIC">+$23.50 shipping</span></span>
-        shipping = result.find('div', {'class': 's-item__detail s-item__detail--primary'}).text
-        #<span class="POSITIVE">Sold  Dec 21, 2022</span>
+class EbayPlaywrightScraper:
+    def __init__(self, search_term: str, output_dir: str = "output", headless: bool = True):
+        self.search_term = search_term
+        self.output_dir = Path(output_dir)
+        self.images_dir = self.output_dir / "images"
+        self.headless = headless
+        self.playwright: Optional[Playwright] = None
+        self.browser: Optional[Browser] = None
+        self.setup_directories()
+        self.setup_logging()
+
+    def setup_directories(self) -> None:
+        self.output_dir.mkdir(exist_ok=True)
+        self.images_dir.mkdir(exist_ok=True)
+
+    def setup_logging(self) -> None:
+        """Configure logging with both file and console output."""
+        # Clear any existing handlers
+        logging.getLogger().handlers = []
         
-        if result.find('span', {'class': 'POSITIVE'}):
-            sold_date = result.find('span', {'class': 'POSITIVE'}).text
-        else:
-            sold_date = None
+        # Create formatters and handlers
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
-
-        img_link = result.find('img', {'class': 's-item__image-img'})['src']
-        item_page = result.find('a', {'class': 's-item__link'})['href']
+        # File handler
+        file_handler = logging.FileHandler(
+            self.output_dir / f'scraper_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        )
+        file_handler.setFormatter(formatter)
         
-        dictionary = {
-            'title': title,
-            'price': price,
-            'shipping': shipping,
-            'sold_date': sold_date,
-            'img_link': img_link,
-            'item_page': item_page,
-        }
-    
-        list_of_dicts.append(dictionary)
-    return list_of_dicts
-
-
-def make_safe_filename(string):
-    # Replace any characters that are not safe for use in a filename
-    # with an underscore
-    safe_string = re.sub(r'[^\w\s_.-]', '_', string)
-    return safe_string
-
-
+        # Console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
         
-def download_imgs(search_term):
-    #open csv file
-    df = pd.read_csv(f'{search_term}.csv')
-    #create a folder named 'images'
-    if not os.path.exists('images'):
-        os.makedirs('images')
-    #download images
-    for index, row in df.iterrows():
-        #get image link and title for each row and save it to the images folder with the title as the file name
-        img_link = row['img_link']
-        img_name = row['title']
-        
-        img_data = requests.get(img_link).content
-        print(f'Downloading {img_name}...out of {len(df)}')
-        with open(f'images/{img_name}.jpg', 'wb') as handler:
-            handler.write(img_data)
+        # Set up the root logger
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
 
+    @staticmethod
+    def make_safe_filename(string: str) -> str:
+        safe_string = re.sub(r'[<>:"/\\|?*]', '_', string)
+        return safe_string[:100]
 
-def scrape_to_csv(url):
-    list_of_dicts = []
-    soup = get_data(url)
-    dict_list = parse(soup)
-    list_of_dicts.extend(dict_list)
-    #<a href="https://www.ebay.com/sch/i.html?_from=R40&amp;_nkw=dbz+score+graded&amp;_sacat=0&amp;rt=nc&amp;LH_Sold=1&amp;LH_Complete=1&amp;_pgn=2" _sp="p2351460.m4115.l8631" data-track="{&quot;eventFamily&quot;:&quot;LST&quot;,&quot;eventAction&quot;:&quot;ACTN&quot;,&quot;actionKind&quot;:&quot;NAVSRC&quot;,&quot;actionKinds&quot;:[&quot;NAVSRC&quot;],&quot;operationId&quot;:&quot;2351460&quot;,&quot;flushImmediately&quot;:false,&quot;eventProperty&quot;:{&quot;moduledtl&quot;:&quot;mi%3A4115%7Ciid%3A1%7Cli%3A1514%7Cluid%3Anext%7Ckind%3Apages%7C&quot;,&quot;pageci&quot;:&quot;f99d25f6-8255-11ed-8e0c-e2d019f6c0e5&quot;,&quot;parentrq&quot;:&quot;3c4f9e391850adb9c9b5b858fffbe0bc&quot;}}" type="next" class="pagination__next icon-link" aria-label="Go to next search page" style="min-width:40px;"><svg class="icon icon--pagination-next" focusable="false" aria-hidden="true"><use xlink:href="#icon-pagination-next"></use></svg></a>
-        #if a next button exists, get the link and call the function again
-    
-    while True:
-        next_button = soup.find('a', {'class': 'pagination__next icon-link'})
-        if next_button:
-            url = next_button['href']
-            soup = get_data(url)
-            dict_list = parse(soup)
-            list_of_dicts.extend(dict_list)
-        else:
-            break
-        
-    #save to csv
-    df = pd.DataFrame(list_of_dicts)
-    df.to_csv(f'{search_term}.csv', index=False, encoding='utf-8-sig')
-    
-    download_imgs(search_term=search_term)
-       
-def insert_images():
-    #convert to csv to html
-    df = pd.read_csv(f'{search_term}.csv')
-    
-        
-    df.to_html('final.html')
-    
-    
-    
+    @asynccontextmanager
+    async def get_browser(self):
+        """Context manager for browser initialization and cleanup."""
+        try:
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(
+                headless=self.headless,
+                args=['--disable-dev-shm-usage']
+            )
+            yield self.browser
+        finally:
+            if self.browser:
+                await self.browser.close()
+            if self.playwright:
+                await self.playwright.stop()
 
+    async def create_page(self) -> Page:
+        if not self.browser:
+            raise RuntimeError("Browser not initialized")
+            
+        page = await self.browser.new_page()
+        await page.set_viewport_size({"width": 1920, "height": 1080})
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+        """)
+        return page
+
+    async def get_page_items(self, page: Page) -> List[EbayItem]:
+        try:
+            # Wait for the items to load
+            await page.wait_for_selector('.s-item__wrapper', timeout=30000)
+            
+            # Extract items using evaluate
+            items_data = await page.evaluate("""
+                () => {
+                    const items = document.querySelectorAll('.s-item__wrapper');
+                    return Array.from(items).map(item => {
+                        const titleElem = item.querySelector('.s-item__title');
+                        const priceElem = item.querySelector('.s-item__price');
+                        const shippingElem = item.querySelector('.s-item__shipping');
+                        const soldDateElem = item.querySelector('.POSITIVE');
+                        const imgElem = item.querySelector('.s-item__image-img');
+                        const linkElem = item.querySelector('.s-item__link');
+                        const conditionElem = item.querySelector('.SECONDARY_INFO');
+                        
+                        return {
+                            title: titleElem ? titleElem.textContent : null,
+                            price: priceElem ? priceElem.textContent : null,
+                            shipping: shippingElem ? shippingElem.textContent : null,
+                            soldDate: soldDateElem ? soldDateElem.textContent : null,
+                            imgLink: imgElem ? imgElem.src : null,
+                            itemPage: linkElem ? linkElem.href : null,
+                            condition: conditionElem ? conditionElem.textContent : null
+                        };
+                    });
+                }
+            """)
+
+            items = []
+            for item_data in items_data:
+                if not item_data['title'] or item_data['title'] == 'Shop on eBay':
+                    continue
+
+                price_str = item_data['price']
+                price = float(re.sub(r'[^\d.]', '', price_str)) if price_str else 0.0
+
+                item = EbayItem(
+                    title=self.make_safe_filename(item_data['title']),
+                    price=price,
+                    shipping=item_data['shipping'],
+                    sold_date=item_data['soldDate'],
+                    img_link=item_data['imgLink'],
+                    item_page=item_data['itemPage'],
+                    condition=item_data['condition'],
+                    scrape_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                )
+                items.append(item)
+
+            return items
+        except Exception as e:
+            logging.error(f"Error extracting items from page: {str(e)}")
+            return []
+
+    async def download_images(self, df: pd.DataFrame) -> None:
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for _, row in df.iterrows():
+                if row['img_link'] and row['title']:
+                    img_path = self.images_dir / f"{row['title']}.jpg"
+                    if not img_path.exists():  # Skip if image already exists
+                        tasks.append(self.download_image(session, row['img_link'], row['title']))
+
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                successful = sum(1 for r in results if isinstance(r, bool) and r)
+                logging.info(f"Downloaded {successful} out of {len(tasks)} images")
+
+    async def download_image(self, session: aiohttp.ClientSession, img_url: str, filename: str) -> bool:
+        try:
+            async with session.get(img_url) as response:
+                if response.status == 200:
+                    img_path = self.images_dir / f"{filename}.jpg"
+                    async with aiofiles.open(img_path, 'wb') as f:
+                        await f.write(await response.read())
+                    return True
+            return False
+        except Exception as e:
+            logging.error(f"Failed to download image {img_url}: {str(e)}")
+            return False
+
+    async def scrape(self) -> pd.DataFrame:
+        """Main scraping function."""
+        all_items = []
+        
+        async with self.get_browser() as browser:
+            try:
+                page = await self.create_page()
+                page_num = 1
+                
+                while True:
+                    logging.info(f"Scraping page {page_num}")
+                    
+                    encoded_term = quote_plus(self.search_term)
+                    url = f'https://www.ebay.com/sch/i.html?_from=R40&_nkw={encoded_term}&_sacat=0&rt=nc&LH_Sold=1&LH_Complete=1'
+                    if page_num > 1:
+                        url += f'&_pgn={page_num}'
+
+                    try:
+                        await page.goto(url, wait_until='networkidle')
+                        items = await self.get_page_items(page)
+                        
+                        if not items:
+                            logging.info("No items found on page, ending scrape")
+                            break
+                            
+                        all_items.extend(items)
+                        logging.info(f"Found {len(items)} items on page {page_num}")
+                        
+                        next_button = await page.query_selector('.pagination__next')
+                        if not next_button:
+                            logging.info("No next page button found, ending scrape")
+                            break
+                            
+                        page_num += 1
+                        await asyncio.sleep(1)
+                        
+                    except Exception as e:
+                        logging.error(f"Error processing page {page_num}: {str(e)}")
+                        break
+
+                df = pd.DataFrame([asdict(item) for item in all_items])
+                
+                if not df.empty:
+                    csv_path = self.output_dir / f'{self.search_term}_{datetime.now().strftime("%Y%m%d")}.csv'
+                    df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+                    logging.info(f"Results saved to {csv_path}")
+                    
+                    await self.download_images(df)
+                
+                return df
+                
+            except Exception as e:
+                logging.error(f"Scraping failed: {str(e)}")
+                raise
+
+async def main():
+    try:
+        search_term = input("Enter search term: ")
+        scraper = EbayPlaywrightScraper(search_term, headless=True)
+        
+        df = await scraper.scrape()
+        print(f"\nScraped {len(df)} items")
+        if not df.empty:
+            print("\nSample of results:")
+            print(df.head())
+            
+    except Exception as e:
+        logging.error(f"Script failed: {str(e)}", exc_info=True)
+        print(f"An error occurred. Check the log file in the output directory for details.")
+        sys.exit(1)
 
 if __name__ == '__main__':
-    #input url with sold items and completed listings
-    search_term = 'dbz score graded'
-#add plus sign between words
-    search_term = search_term.replace(' ', '+')
-    url = f'https://www.ebay.com/sch/i.html?_from=R40&_nkw={search_term}&_sacat=0&rt=nc&LH_Sold=1&LH_Complete=1'
-    #scrape_to_csv(url)
-    insert_images()
+    asyncio.run(main())
