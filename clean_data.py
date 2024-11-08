@@ -2,7 +2,7 @@ import os
 import ollama
 import pandas as pd
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
 
 class InformationExtractor:
@@ -59,44 +59,51 @@ class InformationExtractor:
             self.logger.error(f"Error processing text: {e}", exc_info=True)
             return "Error"
     
-    def process_dataframe(self, 
-                         df: pd.DataFrame, 
-                         input_column: str,
-                         output_column: str,
-                         instruction: str,
-                         row_limit: Optional[int] = None) -> pd.DataFrame:
+    def process_dataframe_multiple(self, 
+                                 df: pd.DataFrame, 
+                                 extraction_params_list: List[Dict],
+                                 row_limit: Optional[int] = None) -> pd.DataFrame:
         """
-        Process a dataframe and add results to a new column
+        Process a dataframe with multiple extraction parameters
         
         Args:
             df: Input DataFrame
-            input_column: Column containing text to process
-            output_column: Column to store results
-            instruction: Instruction for what to extract/how to process the text
+            extraction_params_list: List of dictionaries containing extraction parameters
+                Each dict should have:
+                - input_column: Column containing text to process
+                - output_column: Column to store results
+                - instruction: Instruction for what to extract
             row_limit: Optional limit on number of rows to process (None for all rows)
         """
-        if input_column not in df.columns:
-            error_msg = f"Input column '{input_column}' not found in DataFrame"
-            self.logger.error(error_msg)
-            raise ValueError(error_msg)
+        df_result = df.copy()
         
-        self.logger.info(f"Starting DataFrame processing with {len(df)} rows")
         if row_limit:
             self.logger.info(f"Row limit active: processing only {row_limit} rows")
-            df_to_process = df.head(row_limit)
+            df_to_process = df_result.head(row_limit)
         else:
-            df_to_process = df
+            df_to_process = df_result
             
-        # Create the output column if it doesn't exist
         total_rows = len(df_to_process)
-        df[output_column] = None  # Initialize column
         
-        for idx, row in df_to_process.iterrows():
-            self.logger.info(f"Processing row {idx + 1}/{total_rows}")
-            df.at[idx, output_column] = self.process_text(row[input_column], instruction)
+        for params in extraction_params_list:
+            input_column = params['input_column']
+            output_column = params['output_column']
+            instruction = params['instruction']
             
+            if input_column not in df_result.columns:
+                error_msg = f"Input column '{input_column}' not found in DataFrame"
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            
+            self.logger.info(f"Processing extraction for output column: {output_column}")
+            df_result[output_column] = None  # Initialize column
+            
+            for idx, row in df_to_process.iterrows():
+                self.logger.info(f"Processing row {idx + 1}/{total_rows} for {output_column}")
+                df_result.at[idx, output_column] = self.process_text(row[input_column], instruction)
+        
         self.logger.info("DataFrame processing completed")
-        return df
+        return df_result
 
 def normalize_case(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -108,21 +115,31 @@ def normalize_case(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with all string values converted to lowercase
     """
-    # Create a copy to avoid modifying the original DataFrame
     df_normalized = df.copy()
-    
-    # Get all string/object columns
     string_columns = df_normalized.select_dtypes(include=['object']).columns
     
-    # Convert each string column to lowercase
     for column in string_columns:
         df_normalized[column] = df_normalized[column].str.lower()
     
     return df_normalized
 
+def delete_row_on_length(df: pd.DataFrame, column: str, length: int) -> pd.DataFrame:
+    """
+    Delete rows from the DataFrame where the length of the specified column is greater than a certain value
+    
+    Args:
+        df: Input DataFrame
+        column: Column to check for length
+        length: Minimum length for the column value
+    
+    Returns:
+        DataFrame with rows removed where the column value is greater than the specified length
+    """
+    df_filtered = df[df[column].str.len() <= length]
+    return df_filtered
+
 # Example usage
 if __name__ == "__main__":
-    # Configure logging for the main script
     logging.info("Starting main script execution")
     
     try:
@@ -132,32 +149,47 @@ if __name__ == "__main__":
         
         assert df is not None, "Error loading DataFrame"
         
-        # Example extraction parameters
-        extraction_params = {
-            'input_column': 'title',  # Column containing the text to process
-            'output_column': 'character',  # Column to store the extracted information
-            'instruction': """Extract only the Dragon Ball Z character name from this text.
-                            If no character is mentioned, return 'None'.
-                            Only return the character name, nothing else.""",
-            'row_limit': None  # Set to a number to limit rows processed, None for all rows
-        }
+        # Define multiple extraction parameters
+        extraction_params_list = [
+            {
+                'input_column': 'title',
+                'output_column': 'character',
+                'instruction': """Extract only the Dragon Ball Z character name from this text.
+                                If no character is mentioned, return 'None'.
+                                Only return the character name, nothing else."""
+            },
+            {
+                'input_column': 'title',
+                'output_column': 'psa_grade',
+                'instruction': """Extract only the PSA grade number from this text.
+                                Return only the number (e.g., '9.8', '7.0').
+                                If no PSA grade is mentioned, return 'None'.
+                                Do not include 'PSA' or any other text."""
+            }
+        ]
         
         # Initialize extractor with debug mode
         extractor = InformationExtractor(debug=True)
         
-        # Process the DataFrame
-        df_processed = extractor.process_dataframe(
+        # Process the DataFrame with multiple parameters
+        df_processed = extractor.process_dataframe_multiple(
             df=df,
-            **extraction_params
+            extraction_params_list=extraction_params_list
         )
         
         # Normalize case for all columns
         df_processed = normalize_case(df_processed)
         
-        logging.info("\nProcessed DataFrame:")
-        print(df_processed[['title', 'character']])
+        # Split character column if needed
+        df_processed[['character', 'character2']] = df_processed['character'].str.split(r'\n', n=1, expand=True)
         
-        # Optionally save the processed DataFrame
+        logging.info("\nProcessed DataFrame:")
+        print(df_processed[['title', 'character', 'psa_grade']])
+        
+        #For columns character, character2, delete any rows longer than 25 characters
+        df_processed = delete_row_on_length(df_processed, 'character', 25)
+        
+        # Save the processed DataFrame
         output_file = f'processed_data_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
         df_processed.to_csv(output_file, index=False)
         logging.info(f"Saved processed data to {output_file}")
