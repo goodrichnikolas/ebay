@@ -239,7 +239,7 @@ class EbayPlaywrightScraper:
 async def main():
     try:
         search_term = input("Enter search term: ")
-        scraper = EbayPlaywrightScraper(search_term, headless=True)
+        scraper = EbayPlaywrightScraper(search_term, headless=False)
         
         df = await scraper.scrape()
         print(f"\nScraped {len(df)} items")
