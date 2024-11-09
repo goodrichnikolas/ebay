@@ -199,7 +199,9 @@ class EbayPlaywrightScraper:
                         url += f'&_pgn={page_num}'
 
                     try:
-                        await page.goto(url, wait_until='networkidle')
+                        await page.goto(url)
+                        #wait 4 seconds for the page to load
+                        await asyncio.sleep(4)
                         items = await self.get_page_items(page)
                         
                         if not items:

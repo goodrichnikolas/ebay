@@ -209,12 +209,12 @@ def main():
         df = pd.read_csv(input_file)
         logging.info(f"Loaded DataFrame with {len(df)} rows from {input_file}")
         
-        # Define extraction parameters
+        # Define extraction parameters with updated PSA grade instruction
         extraction_params = [
             ExtractionParams(
                 input_column='title',
                 output_column='character',
-                instruction="""Extract only the Dragon Ball Z character name from this text.
+                instruction="""Extract only the pokemon name from this text.
                              If no character is mentioned, return 'None'.
                              Only return the character name, nothing else."""
             ),
@@ -223,8 +223,8 @@ def main():
                 output_column='psa_grade',
                 instruction="""Extract only the PSA grade number from this text.
                              Return only the number (e.g., '9.8', '7.0').
-                             If no PSA grade is mentioned, return 'None'.
-                             Do not include 'PSA' or any other text."""
+                             If no PSA grade is mentioned or if it's not a valid number, return None.
+                             Do not include any text, only numbers or None."""
             )
         ]
         
@@ -242,23 +242,28 @@ def main():
         df_processed = processor.delete_row_on_length(df_processed, 'character', 25)
         df_processed = processor.extract_price_shipping(df_processed, 'shipping')
         
-        # First convert string 'None' to actual None/NaN values
-        df_processed['psa_grade'] = df_processed['psa_grade'].replace('None', pd.NA)
-
-        # Then drop the rows with empty values
-        df_processed = df_processed.dropna(subset=['psa_grade'])
-
-        # If you still want to remove empty strings
-        df_processed = df_processed[df_processed['psa_grade'] != '']
-                
+        # Debug prints for PSA grade cleaning
+        print("Unique values in psa_grade before cleaning:", df_processed['psa_grade'].unique())
+        print("Value counts before cleaning:\n", df_processed['psa_grade'].value_counts(dropna=False))
+        print("Data type of psa_grade:", df_processed['psa_grade'].dtype)
         
+        # Clean PSA grade values thoroughly
+        df_processed['psa_grade'] = df_processed['psa_grade'].astype(str).str.strip()  # Remove whitespace
+        df_processed['psa_grade'] = df_processed['psa_grade'].replace({
+            'none': None, 
+            'None': None, 
+            '': None, 
+            'nan': None
+        })  # Replace variations of None
+        df_processed = df_processed[df_processed['psa_grade'].notna()]  # Drop null values
+        df_processed = df_processed[df_processed['psa_grade'].str.lower() != 'none']  # Drop 'none' strings
         
-        #convert sold_date to datetime
-        df_processed = processor.extract_sold_date(df_processed, 'sold_date')
-        #Now 'scrape_date'
+        # Debug prints after initial cleaning
+        print("\nAfter initial cleaning:")
+        print("Unique values:", df_processed['psa_grade'].unique())
+        print("Value counts:\n", df_processed['psa_grade'].value_counts(dropna=False))
         
-        #Ensure datatypes are correct
-        
+        # Convert datatypes
         float_rows = ['price', 'shipping', 'psa_grade']
         str_rows = ['character', 'character2', 'condition']
         
@@ -268,11 +273,18 @@ def main():
         for row in str_rows:
             df_processed[row] = df_processed[row].astype(str)
             
+        # Final PSA grade cleaning after type conversion
+        df_processed = df_processed.dropna(subset=['psa_grade'])
         
+        # Debug prints after final cleaning
+        print("\nAfter final cleaning:")
+        print("Unique values:", df_processed['psa_grade'].unique())
+        print("Value counts:\n", df_processed['psa_grade'].value_counts(dropna=False))
+        
+        # Process dates and clean up columns
+        df_processed = processor.extract_sold_date(df_processed, 'sold_date')
         df_processed = df_processed.drop(columns=['img_link', 'item_page', 'title', 'sold_date'])
-        #rename date to sold_date
         df_processed.rename(columns={'date':'sold_date'}, inplace=True)
-        
         
         # Save results
         output_dir = Path('processed')
