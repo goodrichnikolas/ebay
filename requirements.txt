@@ -6,3 +6,7 @@ playwright
 aiofiles
 aiohttp
 ollama
+tqdm
+scikit-learn
+matplotlib
+seaborn

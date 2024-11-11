@@ -10,6 +10,7 @@ from enum import Enum
 import re
 from functools import wraps
 import time
+from tqdm import tqdm
 
 class ModelType(Enum):
     """Supported LLM models"""
@@ -131,6 +132,8 @@ class InformationExtractor:
         Raises:
             ValueError: If input columns don't exist in DataFrame
         """
+                
+        
         df_result = df.copy()
         df_to_process = df_result.head(row_limit) if row_limit else df_result
         total_rows = len(df_to_process)
@@ -142,7 +145,7 @@ class InformationExtractor:
             self.logger.info(f"Processing extraction for output column: {params.output_column}")
             df_result[params.output_column] = pd.NA
             
-            for idx, row in df_to_process.iterrows():
+            for idx, row in tqdm(df_to_process.iterrows(), total=total_rows, desc=f"Processing {params.output_column}"):
                 self.logger.info(f"Processing row {idx + 1}/{total_rows} for {params.output_column}")
                 try:
                     result = self.process_text(row[params.input_column], params.instruction)
